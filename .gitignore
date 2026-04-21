@@ -3,4 +3,5 @@ dist/
 .env
 .env.local
 server/data/
+server/server/data/
 *.log
