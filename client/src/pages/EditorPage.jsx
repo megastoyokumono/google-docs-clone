@@ -2,11 +2,12 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import EditorToolbar from "../components/EditorToolbar";
 import SaveIndicator from "../components/SaveIndicator";
-import { getDocument, saveDocument } from "../lib/api";
+import { getDocument, saveDocument, saveDocumentImmediately } from "../lib/api";
 import { connectToDocument } from "../lib/websocket";
 
 const SAVE_DEBOUNCE_MS = 900;
 const menuItems = ["File", "Edit", "View", "Insert", "Format", "Tools", "Help"];
+const draftStorageKey = (documentId) => `docs-clone:draft:${documentId}`;
 
 function DocsLogo() {
   return (
@@ -35,6 +36,7 @@ export default function EditorPage() {
   const editorRef = useRef(null);
   const socketRef = useRef(null);
   const saveTimerRef = useRef(null);
+  const latestDraftRef = useRef(null);
   const isRemoteUpdateRef = useRef(false);
   const [documentState, setDocumentState] = useState(null);
   const [title, setTitle] = useState("");
@@ -59,6 +61,22 @@ export default function EditorPage() {
     );
   });
 
+  const persistDraftLocally = useEffectEvent((nextTitle, nextContent) => {
+    const draft = {
+      title: nextTitle,
+      content: nextContent,
+      updatedAt: new Date().toISOString(),
+    };
+
+    latestDraftRef.current = draft;
+    window.localStorage.setItem(draftStorageKey(documentId), JSON.stringify(draft));
+  });
+
+  const clearLocalDraft = useEffectEvent(() => {
+    latestDraftRef.current = null;
+    window.localStorage.removeItem(draftStorageKey(documentId));
+  });
+
   const queueSave = useEffectEvent((nextTitle, nextContent) => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
@@ -75,6 +93,7 @@ export default function EditorPage() {
         setTitle(saved.title);
         setLastSavedAt(saved.updatedAt);
         setSaveStatus("saved");
+        clearLocalDraft();
       } catch (saveError) {
         setSaveStatus("error");
         setError(saveError.message);
@@ -89,6 +108,7 @@ export default function EditorPage() {
 
     const content = editorRef.current.innerHTML;
     const nextTitle = title.trim() || "Untitled document";
+    persistDraftLocally(nextTitle, content);
     emitRealtimeUpdate(nextTitle, content);
     queueSave(nextTitle, content);
   });
@@ -109,12 +129,37 @@ export default function EditorPage() {
           return;
         }
 
-        setDocumentState(result);
-        setTitle(result.title);
-        setLastSavedAt(result.updatedAt);
+        const savedDraft = window.localStorage.getItem(draftStorageKey(documentId));
+        let draft = null;
+        if (savedDraft) {
+          try {
+            draft = JSON.parse(savedDraft);
+            latestDraftRef.current = draft;
+          } catch {
+            window.localStorage.removeItem(draftStorageKey(documentId));
+          }
+        }
+
+        const initialDocument =
+          draft && typeof draft.content === "string" && typeof draft.title === "string"
+            ? {
+                ...result,
+                title: draft.title,
+                content: draft.content,
+                updatedAt: draft.updatedAt || result.updatedAt,
+              }
+            : result;
+
+        setDocumentState(initialDocument);
+        setTitle(initialDocument.title);
+        setLastSavedAt(initialDocument.updatedAt);
 
         if (editorRef.current) {
-          editorRef.current.innerHTML = result.content || "<p></p>";
+          editorRef.current.innerHTML = initialDocument.content || "<p></p>";
+        }
+
+        if (draft) {
+          queueSave(initialDocument.title, initialDocument.content || "<p></p>");
         }
       } catch (loadError) {
         if (active) {
@@ -169,7 +214,37 @@ export default function EditorPage() {
     socket.clientId = crypto.randomUUID();
     socketRef.current = socket;
 
+    function flushPendingChanges() {
+      if (!editorRef.current || isRemoteUpdateRef.current) {
+        return;
+      }
+
+      const nextTitle = latestDraftRef.current?.title || title.trim() || "Untitled document";
+      const nextContent = editorRef.current.innerHTML || latestDraftRef.current?.content || "<p></p>";
+      persistDraftLocally(nextTitle, nextContent);
+
+      saveDocumentImmediately(documentId, {
+        title: nextTitle,
+        content: nextContent,
+      }).catch(() => {
+        // Leave the local draft in place so the latest content is restored on reload.
+      });
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        flushPendingChanges();
+      }
+    }
+
+    window.addEventListener("beforeunload", flushPendingChanges);
+    window.addEventListener("pagehide", flushPendingChanges);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
+      window.removeEventListener("beforeunload", flushPendingChanges);
+      window.removeEventListener("pagehide", flushPendingChanges);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current);
       }
@@ -195,6 +270,7 @@ export default function EditorPage() {
 
         const content = editorRef.current.innerHTML;
         const nextTitle = title.trim() || "Untitled document";
+        persistDraftLocally(nextTitle, content);
         emitRealtimeUpdate(nextTitle, content);
         queueSave(nextTitle, content);
       }
@@ -211,6 +287,7 @@ export default function EditorPage() {
     setTitle(nextTitle);
     if (editorRef.current) {
       const content = editorRef.current.innerHTML;
+      persistDraftLocally(nextTitle || "Untitled document", content);
       emitRealtimeUpdate(nextTitle || "Untitled document", content);
       queueSave(nextTitle || "Untitled document", content);
     }

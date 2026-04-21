@@ -67,3 +67,14 @@ export function saveDocument(documentId, payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function saveDocumentImmediately(documentId, payload) {
+  return fetch(`${API_URL}/api/documents/${documentId}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  });
+}
