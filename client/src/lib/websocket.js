@@ -1,7 +1,12 @@
 import { WS_URL } from "./config";
 
+function getToken() {
+  return localStorage.getItem("docs-clone:token");
+}
+
 export function connectToDocument(documentId, handlers) {
-  const socket = new WebSocket(`${WS_URL}/ws?documentId=${documentId}`);
+  const token = getToken();
+  const socket = new WebSocket(`${WS_URL}/ws?documentId=${documentId}&token=${encodeURIComponent(token || "")}`);
 
   socket.addEventListener("message", (event) => {
     try {

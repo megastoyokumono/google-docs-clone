@@ -1,12 +1,17 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import EditorToolbar from "../components/EditorToolbar";
 import SaveIndicator from "../components/SaveIndicator";
-import { getDocument, saveDocument, saveDocumentImmediately } from "../lib/api";
+import { getDocument, saveDocument, deleteDocument } from "../lib/api";
 import { connectToDocument } from "../lib/websocket";
+import { useAuth } from "../lib/AuthContext";
+import MenuBar from "../components/MenuBar";
+import { HorizontalRuler, VerticalRuler } from "../components/Rulers";
 
 const SAVE_DEBOUNCE_MS = 900;
-const menuItems = ["File", "Edit", "View", "Insert", "Format", "Tools", "Help"];
+const PAGE_WIDTH = 816;
+const PAGE_HEIGHT = 1056;
+const PAGE_CANVAS_PADDING_X = 24;
 const draftStorageKey = (documentId) => `docs-clone:draft:${documentId}`;
 
 function DocsLogo() {
@@ -19,33 +24,37 @@ function DocsLogo() {
   );
 }
 
-function IconButton({ label, children }) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      className="flex h-10 w-10 items-center justify-center rounded-full text-[#5f6368] transition hover:bg-[#e8eaed]"
-    >
-      {children}
-    </button>
-  );
-}
+
 
 export default function EditorPage() {
   const { documentId } = useParams();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const editorRef = useRef(null);
   const socketRef = useRef(null);
   const saveTimerRef = useRef(null);
   const latestDraftRef = useRef(null);
   const isRemoteUpdateRef = useRef(false);
+  const isLocalActionRef = useRef(false);
+
   const [documentState, setDocumentState] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [title, setTitle] = useState("");
   const [saveStatus, setSaveStatus] = useState("idle");
   const [lastSavedAt, setLastSavedAt] = useState("");
   const [error, setError] = useState("");
   const [collaborationState, setCollaborationState] = useState("Connecting...");
+  
+  // Multi-page state
+  const [pages, setPages] = useState(["<p></p>"]);
+  const [activePageIndex, setActivePageIndex] = useState(0);
+  const [margins, setMargins] = useState({ top: 72, right: 72, bottom: 72, left: 72 });
+  const [lineSpacing, setLineSpacing] = useState("1.6");
 
-  const emitRealtimeUpdate = useEffectEvent((nextTitle, nextContent) => {
+  // Sidebar Virtualization
+  // Removed as sidebar was deleted
+
+  const emitRealtimeUpdate = useEffectEvent((nextTitle, nextPages, nextLineSpacing, nextMargins) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN) {
       return;
     }
@@ -55,16 +64,20 @@ export default function EditorPage() {
         type: "document:update",
         documentId,
         title: nextTitle,
-        content: nextContent,
+        content: JSON.stringify(nextPages),
+        lineSpacing: nextLineSpacing,
+        margins: JSON.stringify(nextMargins),
         sourceClientId: socketRef.current.clientId,
       }),
     );
   });
 
-  const persistDraftLocally = useEffectEvent((nextTitle, nextContent) => {
+  const persistDraftLocally = useEffectEvent((nextTitle, nextPages, nextLineSpacing, nextMargins) => {
     const draft = {
       title: nextTitle,
-      content: nextContent,
+      content: JSON.stringify(nextPages),
+      lineSpacing: nextLineSpacing,
+      margins: JSON.stringify(nextMargins),
       updatedAt: new Date().toISOString(),
     };
 
@@ -77,7 +90,7 @@ export default function EditorPage() {
     window.localStorage.removeItem(draftStorageKey(documentId));
   });
 
-  const queueSave = useEffectEvent((nextTitle, nextContent) => {
+  const queueSave = useEffectEvent((nextTitle, nextPages, nextLineSpacing, nextMargins) => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
     }
@@ -87,10 +100,13 @@ export default function EditorPage() {
       try {
         const saved = await saveDocument(documentId, {
           title: nextTitle,
-          content: nextContent,
+          content: JSON.stringify(nextPages),
+          lineSpacing: nextLineSpacing,
+          margins: JSON.stringify(nextMargins),
         });
         setDocumentState(saved);
         setTitle(saved.title);
+        setLineSpacing(saved.lineSpacing || "1.6");
         setLastSavedAt(saved.updatedAt);
         setSaveStatus("saved");
         clearLocalDraft();
@@ -101,17 +117,63 @@ export default function EditorPage() {
     }, SAVE_DEBOUNCE_MS);
   });
 
-  const syncEditorState = useEffectEvent(() => {
+  const forceSave = useEffectEvent(async () => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    const nextTitle = title.trim() || "Untitled document";
+    const nextPages = [...pages];
+    if (editorRef.current) {
+      nextPages[activePageIndex] = editorRef.current.innerHTML;
+    }
+    const nextLineSpacing = lineSpacing;
+    const nextMargins = margins;
+
+    setSaveStatus("saving");
+    try {
+      const saved = await saveDocument(documentId, {
+        title: nextTitle,
+        content: JSON.stringify(nextPages),
+        lineSpacing: nextLineSpacing,
+        margins: JSON.stringify(nextMargins),
+      });
+      setDocumentState(saved);
+      setTitle(saved.title);
+      setLineSpacing(saved.lineSpacing || "1.6");
+      setLastSavedAt(saved.updatedAt);
+      setSaveStatus("saved");
+      clearLocalDraft();
+    } catch (saveError) {
+      setSaveStatus("error");
+      setError(saveError.message);
+    }
+  });
+
+  const syncEditorState = useEffectEvent((forcedPages = null) => {
     if (!editorRef.current || isRemoteUpdateRef.current) {
       return;
     }
 
-    const content = editorRef.current.innerHTML;
+    const currentContent = editorRef.current.innerHTML;
+    // Use forcedPages if provided (from a multi-page action), otherwise use current state
+    const basePages = forcedPages || pages;
+    const nextPages = [...basePages];
+    nextPages[activePageIndex] = currentContent;
+    
+    // Mark as local action to prevent cursor jumping in the useEffect
+    isLocalActionRef.current = true;
+    setPages(nextPages);
+
     const nextTitle = title.trim() || "Untitled document";
-    persistDraftLocally(nextTitle, content);
-    emitRealtimeUpdate(nextTitle, content);
-    queueSave(nextTitle, content);
+    persistDraftLocally(nextTitle, nextPages, lineSpacing, margins);
+    emitRealtimeUpdate(nextTitle, nextPages, lineSpacing, margins);
+    queueSave(nextTitle, nextPages, lineSpacing, margins);
   });
+
+  // Clear local action flag after render to ensure cursor stability
+  useEffect(() => {
+    isLocalActionRef.current = false;
+  }, [pages]);
 
   const applyCommand = useEffectEvent((command, value = null) => {
     editorRef.current?.focus();
@@ -119,15 +181,199 @@ export default function EditorPage() {
     syncEditorState();
   });
 
+  const addPage = () => {
+    const nextPages = [...pages, "<p></p>"];
+    setPages(nextPages);
+    setActivePageIndex(nextPages.length - 1);
+    
+    // Sync change
+    const nextTitle = title.trim() || "Untitled document";
+    persistDraftLocally(nextTitle, nextPages, lineSpacing, margins);
+    emitRealtimeUpdate(nextTitle, nextPages, lineSpacing, margins);
+    queueSave(nextTitle, nextPages, lineSpacing, margins);
+  };
+
+  const removePage = (index) => {
+    if (pages.length <= 1) return;
+    const nextPages = pages.filter((_, i) => i !== index);
+    setPages(nextPages);
+    setActivePageIndex(Math.max(0, activePageIndex >= nextPages.length ? nextPages.length - 1 : activePageIndex));
+    
+    // Sync change
+    const nextTitle = title.trim() || "Untitled document";
+    persistDraftLocally(nextTitle, nextPages, lineSpacing, margins);
+    emitRealtimeUpdate(nextTitle, nextPages, lineSpacing, margins);
+    queueSave(nextTitle, nextPages, lineSpacing, margins);
+  };
+
+  const switchPage = (index) => {
+    if (index < 0 || index >= pages.length) return;
+
+    // 1. Save current content to state
+    const currentPages = [...pages];
+    if (editorRef.current) {
+      currentPages[activePageIndex] = editorRef.current.innerHTML;
+      setPages(currentPages);
+    }
+
+    // 2. Change active index
+    setActivePageIndex(index);
+
+    // 3. Scroll the page into view
+    const element = document.getElementById(`page-${index}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // 4. Update editor content logic is handled by React render in the vertical stack
+  };
+
+  const paginateContent = (html) => {
+    const m = margins || { top: 72, right: 72, bottom: 72, left: 72 };
+    const width = PAGE_WIDTH - m.left - m.right;
+    const maxHeight = PAGE_HEIGHT - m.top - m.bottom;
+
+    const measure = document.createElement("div");
+    measure.style.width = `${width}px`;
+    measure.style.position = "fixed";
+    measure.style.top = "0";
+    measure.style.left = "-10000px";
+    measure.style.whiteSpace = "pre-wrap";
+    measure.style.wordBreak = "break-word";
+    measure.style.lineHeight = lineSpacing || "1.6";
+    measure.style.visibility = "hidden";
+    measure.className = "editor-content font-['Arial'] text-[14.67px]";
+    document.body.appendChild(measure);
+
+    const resultPages = [];
+    const temp = document.createElement("div");
+    temp.innerHTML = (html || "").replace(/<!--[\s\S]*?-->/g, "");
+
+    const addNodeToPages = (node) => {
+      const clone = node.cloneNode(true);
+      measure.appendChild(clone);
+
+      if (measure.offsetHeight > maxHeight) {
+        measure.removeChild(clone);
+
+        if (measure.innerHTML.trim() !== "") {
+          resultPages.push(measure.innerHTML);
+          measure.innerHTML = "";
+          // If after clearing, it still overflows, we must split it.
+          // We don't call addNodeToPages recursively here to avoid infinite loops.
+          // Instead, we fall through to the splitting logic.
+          measure.appendChild(clone);
+          if (measure.offsetHeight <= maxHeight) {
+            // It fits now!
+            return;
+          }
+          measure.removeChild(clone);
+        }
+        
+        // Split logic
+        if (node.nodeType === Node.TEXT_NODE) {
+          const words = node.textContent.split(/(\s+)/);
+          for (const word of words) {
+            const textNode = document.createTextNode(word);
+            measure.appendChild(textNode);
+            if (measure.offsetHeight > maxHeight) {
+              measure.removeChild(textNode);
+              if (measure.innerHTML.trim() !== "") {
+                resultPages.push(measure.innerHTML);
+                measure.innerHTML = "";
+                measure.appendChild(textNode);
+              } else {
+                // Hard break for long words
+                resultPages.push(word);
+                measure.innerHTML = "";
+              }
+            }
+          }
+        } else if (node.nodeType === Node.ELEMENT_NODE && node.childNodes.length > 0) {
+          // Recurse into children
+          Array.from(node.childNodes).forEach(addNodeToPages);
+        } else {
+          // Leaf element too big, just force it and move on
+          resultPages.push(node.outerHTML);
+          measure.innerHTML = "";
+        }
+      }
+    };
+
+    Array.from(temp.childNodes).forEach(addNodeToPages);
+    if (measure.innerHTML.trim() !== "") {
+      resultPages.push(measure.innerHTML);
+    }
+
+    document.body.removeChild(measure);
+    
+    // Safety check: if resultPages is empty but input was not, return the input as one page
+    if (resultPages.length === 0 && html.trim() !== "") {
+      return [html];
+    }
+    
+    return resultPages.length > 0 ? resultPages : ["<p></p>"];
+  };
+
+  const handlePaste = (e) => {
+    e.preventDefault();
+    const html = e.clipboardData.getData("text/html") || 
+                 e.clipboardData.getData("text/plain").split("\n").map(p => `<p>${p.trim() || "&nbsp;"}</p>`).join("");
+    
+    if (!html) return;
+
+    // Handle empty first page replacement
+    const currentContent = pages[activePageIndex] || "";
+    const isEmptyDoc = pages.length === 1 && (
+      !currentContent || 
+      currentContent === "<p></p>" || 
+      currentContent === "<p><br></p>" || 
+      currentContent.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, "").trim() === ""
+    );
+    
+    if (isEmptyDoc) {
+      const paginated = paginateContent(html.replace(/<!--[\s\S]*?-->/g, ""));
+      if (editorRef.current) {
+        editorRef.current.innerHTML = paginated[0] || "<p></p>";
+      }
+      setPages(paginated);
+      setActivePageIndex(0);
+      syncEditorState(paginated);
+      return;
+    }
+
+    // Use native command to insert HTML at cursor - this is much more stable
+    document.execCommand("insertHTML", false, html.replace(/<!--[\s\S]*?-->/g, ""));
+    
+    // After insertion, check if we need to split the current page
+    setTimeout(() => {
+      if (!editorRef.current) return;
+      
+      const fullHtml = editorRef.current.innerHTML;
+      const paginated = paginateContent(fullHtml);
+      
+      if (paginated.length > 1) {
+        const [first, ...rest] = paginated;
+        const nextPages = [...pages];
+        nextPages[activePageIndex] = first;
+        nextPages.splice(activePageIndex + 1, 0, ...rest);
+        
+        // Immediately sync the new multi-page state
+        editorRef.current.innerHTML = first;
+        syncEditorState(nextPages);
+      } else {
+        syncEditorState();
+      }
+    }, 10);
+  };
+
   useEffect(() => {
     let active = true;
 
     async function loadDocument() {
       try {
         const result = await getDocument(documentId);
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         const savedDraft = window.localStorage.getItem(draftStorageKey(documentId));
         let draft = null;
@@ -140,156 +386,141 @@ export default function EditorPage() {
           }
         }
 
-        const initialDocument =
-          draft && typeof draft.content === "string" && typeof draft.title === "string"
-            ? {
-                ...result,
-                title: draft.title,
-                content: draft.content,
-                updatedAt: draft.updatedAt || result.updatedAt,
-              }
-            : result;
+        const initialDocument = draft || result;
+        
+        let initialPages = ["<p></p>"];
+        try {
+           initialPages = JSON.parse(initialDocument.content);
+           if (!Array.isArray(initialPages)) initialPages = [initialDocument.content || "<p></p>"];
+        } catch {
+           initialPages = [initialDocument.content || "<p></p>"];
+        }
 
-        setDocumentState(initialDocument);
+        let initialMargins = { top: 72, right: 72, bottom: 72, left: 72 };
+        try {
+          if (initialDocument.margins) initialMargins = JSON.parse(initialDocument.margins);
+        } catch {
+          // ignore margins parse error
+        }
+
+        setDocumentState(result);
         setTitle(initialDocument.title);
+        setPages(initialPages);
+        setMargins(initialMargins);
+        setLineSpacing(initialDocument.lineSpacing || "1.6");
         setLastSavedAt(initialDocument.updatedAt);
 
         if (editorRef.current) {
-          editorRef.current.innerHTML = initialDocument.content || "<p></p>";
+          editorRef.current.innerHTML = initialPages[0] || "<p></p>";
         }
 
         if (draft) {
-          queueSave(initialDocument.title, initialDocument.content || "<p></p>");
+          queueSave(initialDocument.title, initialPages, initialDocument.lineSpacing || "1.6", initialMargins);
         }
       } catch (loadError) {
-        if (active) {
-          setError(loadError.message);
-        }
+        if (active) setError(loadError.message);
       }
     }
 
     loadDocument();
-
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [documentId]);
 
   useEffect(() => {
     const socket = connectToDocument(documentId, {
-      onOpen() {
-        setCollaborationState("Live");
-      },
-      onClose() {
-        setCollaborationState("Offline");
-      },
-      onError() {
-        setCollaborationState("Connection issue");
-      },
+      onOpen() { setCollaborationState("Live"); },
+      onClose() { setCollaborationState("Offline"); },
+      onError() { setCollaborationState("Connection issue"); },
       onMessage(payload) {
-        if (payload.type !== "document:update") {
-          return;
-        }
-
-        if (payload.sourceClientId === socketRef.current?.clientId) {
-          return;
-        }
-
-        if (!editorRef.current) {
-          return;
-        }
+        if (payload.type !== "document:update") return;
+        if (payload.sourceClientId === socketRef.current?.clientId) return;
+        if (!editorRef.current) return;
 
         isRemoteUpdateRef.current = true;
-        editorRef.current.innerHTML = payload.content;
+        
+        let remotePages = [];
+        try {
+          remotePages = JSON.parse(payload.content);
+        } catch { remotePages = [payload.content]; }
+        
+        let remoteMargins = { top: 72, right: 72, bottom: 72, left: 72 };
+        try {
+          if (payload.margins) remoteMargins = JSON.parse(payload.margins);
+        } catch {
+          // ignore margins parse error
+        }
+
+        setPages(remotePages);
+        setMargins(remoteMargins);
         setTitle(payload.title);
+        if (payload.lineSpacing) setLineSpacing(payload.lineSpacing);
         setLastSavedAt(payload.updatedAt);
         setSaveStatus("saved");
 
-        window.setTimeout(() => {
-          isRemoteUpdateRef.current = false;
-        }, 0);
+        // Update editor if current page changed remotely
+        if (remotePages[activePageIndex] !== undefined) {
+          editorRef.current.innerHTML = remotePages[activePageIndex];
+        }
+
+        window.setTimeout(() => { isRemoteUpdateRef.current = false; }, 0);
       },
     });
 
     socket.clientId = crypto.randomUUID();
     socketRef.current = socket;
 
-    function flushPendingChanges() {
-      if (!editorRef.current || isRemoteUpdateRef.current) {
-        return;
-      }
+    return () => { socket.close(); };
+  }, [documentId, activePageIndex]);
 
-      const nextTitle = latestDraftRef.current?.title || title.trim() || "Untitled document";
-      const nextContent = editorRef.current.innerHTML || latestDraftRef.current?.content || "<p></p>";
-      persistDraftLocally(nextTitle, nextContent);
-
-      saveDocumentImmediately(documentId, {
-        title: nextTitle,
-        content: nextContent,
-      }).catch(() => {
-        // Leave the local draft in place so the latest content is restored on reload.
-      });
-    }
-
-    function handleVisibilityChange() {
-      if (document.visibilityState === "hidden") {
-        flushPendingChanges();
-      }
-    }
-
-    window.addEventListener("beforeunload", flushPendingChanges);
-    window.addEventListener("pagehide", flushPendingChanges);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("beforeunload", flushPendingChanges);
-      window.removeEventListener("pagehide", flushPendingChanges);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-      socket.close();
-    };
-  }, [documentId]);
-
+  // Update editor content when activePageIndex changes or remote updates arrive
   useEffect(() => {
-    function onKeyDown(event) {
-      if (!editorRef.current || !editorRef.current.contains(document.activeElement)) {
-        return;
-      }
-
-      if ((event.ctrlKey || event.metaKey) && ["b", "i", "u"].includes(event.key.toLowerCase())) {
-        event.preventDefault();
-        const map = { b: "bold", i: "italic", u: "underline" };
-        editorRef.current?.focus();
-        document.execCommand(map[event.key.toLowerCase()], false, null);
-
-        if (!editorRef.current || isRemoteUpdateRef.current) {
-          return;
-        }
-
-        const content = editorRef.current.innerHTML;
-        const nextTitle = title.trim() || "Untitled document";
-        persistDraftLocally(nextTitle, content);
-        emitRealtimeUpdate(nextTitle, content);
-        queueSave(nextTitle, content);
+    if (editorRef.current && pages[activePageIndex] !== undefined) {
+      // Only update if current editor content is different AND it's not a local change
+      if (editorRef.current.innerHTML !== pages[activePageIndex] && !isLocalActionRef.current) {
+        isRemoteUpdateRef.current = true;
+        editorRef.current.innerHTML = pages[activePageIndex];
+        window.setTimeout(() => {
+          isRemoteUpdateRef.current = false;
+        }, 0);
       }
     }
+  }, [activePageIndex, pages]);
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [title]);
-
-  const headingText = useMemo(() => title || "Untitled document", [title]);
-
+  function handleLogout() {
+    logout();
+    navigate("/login");
+  }
   function handleTitleChange(event) {
     const nextTitle = event.target.value;
     setTitle(nextTitle);
-    if (editorRef.current) {
-      const content = editorRef.current.innerHTML;
-      persistDraftLocally(nextTitle || "Untitled document", content);
-      emitRealtimeUpdate(nextTitle || "Untitled document", content);
-      queueSave(nextTitle || "Untitled document", content);
+    syncEditorState();
+  }
+
+  function handleLineSpacingChange(newLineSpacing) {
+    setLineSpacing(newLineSpacing);
+    // Trigger sync
+    const nextTitle = title.trim() || "Untitled document";
+    persistDraftLocally(nextTitle, pages, newLineSpacing, margins);
+    emitRealtimeUpdate(nextTitle, pages, newLineSpacing, margins);
+    queueSave(nextTitle, pages, newLineSpacing, margins);
+  }
+
+  const handleMarginChange = (newMargins) => {
+    setMargins(newMargins);
+    // Trigger sync
+    const nextTitle = title.trim() || "Untitled document";
+    persistDraftLocally(nextTitle, pages, lineSpacing, newMargins);
+    emitRealtimeUpdate(nextTitle, pages, lineSpacing, newMargins);
+    queueSave(nextTitle, pages, lineSpacing, newMargins);
+  };
+
+  async function handleDeleteDocument() {
+    try {
+      await deleteDocument(documentId);
+      navigate("/");
+    } catch (deleteError) {
+      setError(deleteError.message);
+      setShowDeleteConfirm(false);
     }
   }
 
@@ -308,116 +539,156 @@ export default function EditorPage() {
   }
 
   return (
-    <main className="min-h-screen bg-workspace">
-      <div className="border-b border-[#dadce0] bg-chrome px-2 py-2 sm:px-4">
-        <div className="flex flex-wrap items-start gap-2">
-          <div className="flex items-start gap-1">
-            <IconButton label="Main menu">
-              <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current stroke-[1.8]">
-                <path d="M4 7h16M4 12h16M4 17h16" />
-              </svg>
-            </IconButton>
-            <Link to="/" className="hidden sm:block">
+    <main className="min-h-screen bg-workspace flex flex-col">
+      {/* Header */}
+      <div className="border-b border-[#dadce0] bg-chrome px-4 py-2 shrink-0">
+        <div className="flex items-start gap-4">
+          <div className="flex items-center gap-1">
+            <Link to="/">
               <DocsLogo />
             </Link>
           </div>
 
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
                   <input
                     value={title}
                     onChange={handleTitleChange}
-                    className="h-10 min-w-0 rounded-md border border-transparent bg-transparent px-3 text-[18px] font-normal text-[#202124] outline-none transition hover:bg-[#f1f3f4] focus:border-[#c2dbff] focus:bg-white"
+                    className="h-8 min-w-0 rounded-md border border-transparent bg-transparent px-2 text-[18px] font-normal text-[#202124] outline-none transition hover:bg-[#f1f3f4] focus:border-[#c2dbff] focus:bg-white"
                     maxLength={120}
                     placeholder="Untitled document"
                   />
-                  <span className="hidden rounded-full border border-[#dadce0] px-3 py-1 text-xs text-[#5f6368] sm:inline-flex">
-                    Local Docs
-                  </span>
+                  <SaveIndicator status={saveStatus} lastSavedAt={lastSavedAt} />
                 </div>
-
-                <div className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-1">
-                  {menuItems.map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      className="rounded px-3 py-1.5 text-[14px] text-[#3c4043] transition hover:bg-[#e8eaed]"
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
+                <MenuBar onCommand={applyCommand} editorRef={editorRef} onSave={forceSave} />
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <SaveIndicator status={saveStatus} lastSavedAt={lastSavedAt} />
-                <div className="rounded-full px-3 py-1.5 text-[13px] text-[#5f6368] hover:bg-[#e8eaed]">
-                  {collaborationState}
-                </div>
+              <div className="flex items-center gap-3">
+                <div className="text-[13px] text-[#5f6368]">{collaborationState}</div>
                 <button
-                  type="button"
-                  className="rounded-full bg-[#1a73e8] px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-[#1765cc]"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="rounded bg-[#fce8e6] px-3 py-1.5 text-sm font-medium text-[#d93025] hover:bg-[#f5c6c1]"
                 >
+                  Delete
+                </button>
+                <button className="rounded-full bg-[#1a73e8] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-[#1765cc]">
                   Share
                 </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="rounded-full border border-[#dadce0] px-3 py-1.5 text-sm font-medium text-[#3c4043] transition hover:bg-[#f1f3f4]"
+                >
+                  Sign out
+                </button>
                 <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#c2e7ff] text-sm font-medium text-[#174ea6]">
-                  U
+                  {user?.username?.[0]?.toUpperCase() || "U"}
                 </div>
               </div>
             </div>
 
-            <div className="mt-2">
-              <EditorToolbar onCommand={applyCommand} />
+            <div className="mt-1">
+              <EditorToolbar 
+                onCommand={applyCommand} 
+                lineSpacing={lineSpacing}
+                onLineSpacingChange={handleLineSpacingChange}
+              />
             </div>
           </div>
         </div>
       </div>
 
-      {error ? (
-        <div className="mx-auto mt-4 max-w-[1600px] px-4">
-          <div className="rounded-md border border-[#f1b7b1] bg-[#fce8e6] px-4 py-3 text-sm text-[#d93025]">
-            {error}
-          </div>
-        </div>
-      ) : null}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Main Editor Area */}
+        <div className="flex-1 overflow-y-auto bg-[#f0f4f9] docs-scrollbar relative flex flex-col items-center py-12 gap-10">
+          {pages.map((page, index) => (
+            <div 
+              key={index}
+              id={`page-${index}`}
+              className={`bg-white shadow-paper relative shrink-0 transition-shadow ${
+                activePageIndex === index ? 'ring-2 ring-[#1a73e8] ring-offset-4 ring-offset-[#f0f4f9]' : ''
+              }`}
+              style={{
+                width: `${PAGE_WIDTH}px`,
+                height: `${PAGE_HEIGHT}px`,
+              }}
+              onClick={() => setActivePageIndex(index)}
+            >
+              {/* Rulers on the first page container */}
+              {index === 0 && (
+                <>
+                   <div className="absolute -top-10 left-0 w-full">
+                      <HorizontalRuler
+                        pageWidth={PAGE_WIDTH}
+                        leftMargin={margins.left}
+                        rightMargin={margins.right}
+                        onChange={(m) => handleMarginChange({ ...margins, left: m.left, right: m.right })}
+                      />
+                   </div>
+                   <div className="absolute top-0 -left-10 h-full">
+                      <VerticalRuler
+                        pageHeight={PAGE_HEIGHT}
+                        topMargin={margins.top}
+                        bottomMargin={margins.bottom}
+                        onChange={(m) => handleMarginChange({ ...margins, top: m.top, bottom: m.bottom })}
+                      />
+                   </div>
+                </>
+              )}
 
-      <div className="mx-auto max-w-[1600px] px-4 pb-10 pt-6 sm:px-6">
-        <div className="flex justify-center">
-          <section className="w-full max-w-[980px]">
-            <div className="mb-4 flex items-center justify-between px-2 text-[13px] text-[#5f6368]">
-              <div className="flex items-center gap-4">
-                <span>100%</span>
-                <span>Editing</span>
-              </div>
-              <span>Arial 11</span>
-            </div>
-
-            <div className="rounded-sm bg-transparent px-2 pb-4 pt-2">
-              <div className="mx-auto min-h-[1056px] w-full max-w-[816px] bg-white px-[72px] py-[72px] shadow-paper">
-                <div className="mb-6 border-b border-[#f1f3f4] pb-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-[#9aa0a6]">
-                    Document
-                  </p>
-                  <h1 className="mt-2 text-[28px] font-normal text-[#202124]">
-                    {headingText}
-                  </h1>
-                </div>
-
+              <div
+                className="absolute inset-0 box-border overflow-hidden"
+                style={{
+                  padding: `${margins.top}px ${margins.right}px ${margins.bottom}px ${margins.left}px`
+                }}
+              >
                 <div
-                  ref={editorRef}
-                  className="editor-content min-h-[760px] whitespace-pre-wrap break-words font-['Arial'] text-[14.67px] leading-[1.6] text-[#202124] outline-none"
-                  contentEditable
+                  ref={activePageIndex === index ? editorRef : null}
+                  className="editor-content min-h-full whitespace-pre-wrap break-words text-[14.67px] text-[#202124] outline-none"
+                  style={{ lineHeight: lineSpacing, fontFamily: 'Arial, sans-serif' }}
+                  contentEditable={activePageIndex === index}
                   suppressContentEditableWarning
-                  data-placeholder="Start typing here..."
-                  onInput={syncEditorState}
+                  onInput={() => syncEditorState()}
+                  onPaste={handlePaste}
+                  // ONLY use dangerouslySetInnerHTML for pages you are NOT currently typing on.
+                  // For the active page, we manage content manually via refs to prevent cursor jumps.
+                  dangerouslySetInnerHTML={activePageIndex !== index ? { __html: page } : undefined}
                 />
               </div>
             </div>
-          </section>
+          ))}
         </div>
       </div>
+
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-lg font-medium text-[#202124]">Delete document?</h2>
+            <p className="mt-2 text-sm text-[#5f6368]">
+              This will permanently delete &ldquo;{title || "Untitled document"}&rdquo;. This action cannot be undone.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className="rounded-full border border-[#dadce0] px-4 py-2 text-sm font-medium text-[#3c4043] transition hover:bg-[#f1f3f4]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteDocument}
+                className="rounded-full bg-[#d93025] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#c5221f]"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -2,14 +2,21 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import DocumentCard from "../components/DocumentCard";
 import { createDocument, listDocuments } from "../lib/api";
+import { useAuth } from "../lib/AuthContext";
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [documents, setDocuments] = useState([]);
   const [title, setTitle] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
+
+  function handleLogout() {
+    logout();
+    navigate("/login");
+  }
 
   useEffect(() => {
     let active = true;
@@ -71,12 +78,19 @@ export default function DashboardPage() {
           <div className="min-w-0 flex-1">
             <h1 className="text-[22px] font-normal text-[#202124]">Docs</h1>
           </div>
-          <button
-            type="button"
-            className="rounded-full bg-[#1a73e8] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#1765cc]"
-          >
-            Share
-          </button>
+          <div className="flex items-center gap-3">
+            <span className="hidden text-sm text-[#5f6368] sm:block">{user?.username}</span>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-full border border-[#dadce0] px-4 py-2 text-sm font-medium text-[#3c4043] transition hover:bg-[#f1f3f4]"
+            >
+              Sign out
+            </button>
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#c2e7ff] text-sm font-medium text-[#174ea6]">
+              {user?.username?.[0]?.toUpperCase() || "U"}
+            </div>
+          </div>
         </div>
       </div>
 

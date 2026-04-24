@@ -2,7 +2,9 @@ import http from "node:http";
 import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
+import authRouter from "./routes/auth.js";
 import documentsRouter from "./routes/documents.js";
+import { authenticate } from "./middleware/auth.js";
 import { attachRealtime } from "./services/realtime.js";
 import "./db/database.js";
 
@@ -19,7 +21,8 @@ app.get("/api/health", (_request, response) => {
   response.json({ ok: true });
 });
 
-app.use("/api/documents", documentsRouter);
+app.use("/api/auth", authRouter);
+app.use("/api/documents", authenticate, documentsRouter);
 
 app.use((error, _request, response, _next) => {
   if (error?.type === "entity.too.large" || error?.status === 413) {

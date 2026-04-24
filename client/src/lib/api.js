@@ -1,9 +1,15 @@
 import { API_URL } from "./config";
 
+function getToken() {
+  return localStorage.getItem("docs-clone:token");
+}
+
 async function request(path, options = {}) {
+  const token = getToken();
   const response = await fetch(`${API_URL}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
     ...options,
@@ -46,6 +52,14 @@ async function request(path, options = {}) {
   return response.json();
 }
 
+export function login(payload) {
+  return request("/api/auth/login", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function register(payload) {
+  return request("/api/auth/register", { method: "POST", body: JSON.stringify(payload) });
+}
+
 export function listDocuments() {
   return request("/api/documents");
 }
@@ -69,12 +83,20 @@ export function saveDocument(documentId, payload) {
 }
 
 export function saveDocumentImmediately(documentId, payload) {
+  const token = getToken();
   return fetch(`${API_URL}/api/documents/${documentId}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(payload),
     keepalive: true,
+  });
+}
+
+export function deleteDocument(documentId) {
+  return request(`/api/documents/${documentId}`, {
+    method: "DELETE",
   });
 }

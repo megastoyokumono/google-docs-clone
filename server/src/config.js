@@ -11,6 +11,7 @@ export const config = {
   port: Number(process.env.PORT || 3001),
   clientOrigin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
   dbPath: path.resolve(process.env.DB_PATH || defaultDbPath),
-  requestSizeLimit: process.env.REQUEST_SIZE_LIMIT || "25mb",
-  maxDocumentLength: Number(process.env.MAX_DOCUMENT_LENGTH || 10000000),
+  requestSizeLimit: process.env.REQUEST_SIZE_LIMIT || "100mb",
+  maxDocumentLength: Number(process.env.MAX_DOCUMENT_LENGTH || 100000000),
+  jwtSecret: process.env.JWT_SECRET || "local-docs-clone-dev-secret-change-in-prod",
 };

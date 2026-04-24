@@ -2,14 +2,34 @@ const blockOptions = [
   { label: "Normal text", value: "<p>" },
   { label: "Heading 1", value: "<h1>" },
   { label: "Heading 2", value: "<h2>" },
+  { label: "Heading 3", value: "<h3>" },
+  { label: "Heading 4", value: "<h4>" },
+  { label: "Heading 5", value: "<h5>" },
+  { label: "Heading 6", value: "<h6>" },
 ];
 
-const fontOptions = ["Arial", "Roboto", "Times New Roman", "Courier New"];
+const fontOptions = [
+  "Arial",
+  "Comic Sans MS",
+  "Courier New",
+  "Garamond",
+  "Georgia",
+  "Helvetica",
+  "Impact",
+  "Roboto",
+  "Tahoma",
+  "Times New Roman",
+  "Trebuchet MS",
+  "Verdana"
+];
 const sizeOptions = [
+  { label: "8", value: "1" },
   { label: "10", value: "2" },
-  { label: "11", value: "3" },
-  { label: "12", value: "4" },
-  { label: "14", value: "5" },
+  { label: "12", value: "3" },
+  { label: "14", value: "4" },
+  { label: "18", value: "5" },
+  { label: "24", value: "6" },
+  { label: "36", value: "7" },
 ];
 
 function ToolbarButton({ label, title, children, onClick }) {
@@ -38,7 +58,7 @@ function Icon({ children }) {
   );
 }
 
-export default function EditorToolbar({ onCommand }) {
+export default function EditorToolbar({ onCommand, lineSpacing, onLineSpacingChange }) {
   return (
     <div className="docs-scrollbar overflow-x-auto rounded-full bg-chrome px-2 py-1.5">
       <div className="flex min-w-max items-center gap-1">
@@ -48,7 +68,7 @@ export default function EditorToolbar({ onCommand }) {
           className="h-9 rounded-md border border-transparent bg-transparent px-3 text-sm text-[#3c4043] outline-none hover:bg-hover"
         >
           {fontOptions.map((option) => (
-            <option key={option} value={option}>
+            <option key={option} value={option} style={{ fontFamily: option }}>
               {option}
             </option>
           ))}
@@ -76,6 +96,21 @@ export default function EditorToolbar({ onCommand }) {
               {option.label}
             </option>
           ))}
+        </select>
+
+        <Divider />
+
+        <select
+          value={lineSpacing || "1.6"}
+          onChange={(event) => onLineSpacingChange(event.target.value)}
+          className="h-9 rounded-md border border-transparent bg-transparent px-3 text-sm text-[#3c4043] outline-none hover:bg-hover"
+          title="Line spacing"
+        >
+          <option value="1.0">Single</option>
+          <option value="1.15">1.15</option>
+          <option value="1.5">1.5</option>
+          <option value="1.6">1.6 (Default)</option>
+          <option value="2.0">Double</option>
         </select>
 
         <Divider />
