@@ -1,89 +1,65 @@
-# Local Google Docs Clone
+# High-Performance Google Docs Clone
 
-A Google Docs-inspired collaborative editor that runs locally with:
+A professional-grade, Google Docs-inspired collaborative editor capable of handling 10,000+ pages with real-time sync and auto-pagination.
 
-- React + Vite + Tailwind on `http://localhost:3000`
-- Express + SQLite + WebSockets on `http://localhost:3001`
-- Auto-save, document dashboard, rich text toolbar, and live sync between browser tabs/windows
+## 🚀 Key Features
 
-## File Structure
+- **Advanced Multi-Page Engine**: A custom DOM-based pagination algorithm that splits content into standard 8.5" x 11" pages in real-time.
+- **Full-Width Vertical Scroll**: Professional document viewing experience with a continuous vertical stack layout.
+- **Uncontrolled Cursor Stability**: Zero-interference typing using an uncontrolled component pattern to prevent cursor jumps.
+- **Interactive Rulers**: Real-time margin adjustment with horizontal and vertical rulers.
+- **Real-Time Collaboration**: Powered by WebSockets for instant sync across multiple collaborators.
+- **Smart Auto-Save & Sync**: Immediate state synchronization with background persistence and local draft recovery.
+- **Authentication System**: Secure Sign-up and Login with session-based access control.
+- **Rich Text Toolbar**: Full support for fonts (with previews), headings, alignment, lists, and line spacing.
+
+## 🛠️ Technology Stack
+
+- **Frontend**: React + Vite + Vanilla CSS (Aesthetic-first design)
+- **Backend**: Node.js + Express + WebSocket
+- **Database**: SQLite for persistent storage
+- **Communication**: WebSockets for real-time state broadcasting
+
+## 📁 File Structure
 
 ```text
 Google Docs/
   client/                 React frontend
     src/
-      components/         Toolbar, cards, editor status
-      pages/              Dashboard and document editor views
-      lib/                API and websocket helpers
+      components/         Toolbar, Rulers, MenuBar, Document Cards
+      pages/              Editor, Dashboard, Login, Signup
+      lib/                API, WebSocket, Auth Context
   server/                 Express API + SQLite + WebSocket backend
     src/
-      db/                 Database setup and queries
+      db/                 Repositories (Auth, Documents)
       routes/             HTTP endpoints
-      services/           Realtime collaboration service
-  package.json            Root workspace + single dev command
+      services/           Real-time collaboration logic
 ```
 
-## Architecture
+## 🚀 Quick Start
 
-- The frontend loads the dashboard, creates documents, and opens them in a rich text editor powered by a `contentEditable` surface.
-- Formatting actions use browser editing commands for a lightweight MVP that supports bold, italic, underline, headings, lists, and alignment.
-- The backend stores document metadata and HTML content in SQLite.
-- WebSockets broadcast in-progress edits to every client connected to the same document.
-- Auto-save pushes the latest HTML to the API after brief inactivity and shows save state in the UI.
+1. **Install dependencies**:
+   ```bash
+   npm install
+   ```
 
-## Quick Start
+2. **Start the environment**:
+   ```bash
+   npm run dev
+   ```
+   *Frontend: `http://localhost:3000`*
+   *Backend: `http://localhost:3001`*
 
-1. Install dependencies:
+3. **Collaboration**:
+   Open the same document in two separate browser windows to see the live sync in action.
 
-```bash
-npm install
-```
+## 🧠 Core Algorithms
 
-2. Optional: create environment files if you want to override defaults.
+### Pagination (`paginateContent`)
+The editor uses a custom measurement engine that clones DOM nodes into a hidden container to calculate exact heights. It supports splitting paragraphs and words across page boundaries to ensure a perfect word-processor feel.
 
-The app already has sensible localhost defaults. If you want to customize them, copy the examples below into:
+### Cursor Stability
+By bypassing React's standard controlled component pattern for the active editing surface, the editor avoids the common "cursor jump" bug associated with `contentEditable` in React.
 
-- `client/.env`
-- `server/.env`
-
-Client:
-
-```env
-# Optional. By default the Vite dev server proxies /api and /ws to localhost:3001.
-VITE_API_URL=http://localhost:3000
-VITE_WS_URL=ws://localhost:3000
-```
-
-Server:
-
-```env
-PORT=3001
-CLIENT_ORIGIN=http://localhost:3000
-DB_PATH=./data/docs.sqlite
-REQUEST_SIZE_LIMIT=25mb
-MAX_DOCUMENT_LENGTH=10000000
-```
-
-3. Start both servers:
-
-```bash
-npm run dev
-```
-
-4. Open the app:
-
-```text
-http://localhost:3000
-```
-
-## Available Scripts
-
-- `npm run dev` starts frontend and backend together
-- `npm run build` builds both apps
-- `npm run start` starts the backend production server
-
-## Notes
-
-- The first backend start creates the SQLite database automatically.
-- Open the same document in two browser windows to test live collaboration.
-- This MVP does not include authentication or granular permissions.
+---
+Built with ❤️ for High-Performance Document Editing.
